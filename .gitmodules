@@ -2,11 +2,3 @@
 	path = References/Mai2Touch
 	url = https://github.com/Sucareto/Mai2Touch.git
 	shallow = true
-[submodule "Middlewares/Third_Party/tinyusb"]
-	path = Dependencies/tinyusb
-	url = https://github.com/hathach/tinyusb.git
-	shallow = true
-[submodule "Middlewares/Third_Party/MultiButton"]
-	path = Dependencies/MultiButton
-	url = https://github.com/0x1abin/MultiButton.git
-	shallow = true
