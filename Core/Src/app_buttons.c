@@ -1,5 +1,6 @@
 #include "app_buttons.h"
 
+#include "app_mai2led.h"
 #include "main.h"
 #include "multi_button.h"
 
@@ -47,6 +48,7 @@ static void AppButtons_Button08LongPressCallback(Button *handle, void *user_data
 {
   (void)handle;
   (void)user_data;
+  AppMai2Led_RestoreIdleLights();
 }
 
 void AppButtons_Init(void)

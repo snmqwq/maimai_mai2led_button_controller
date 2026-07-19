@@ -7,7 +7,11 @@
 extern "C" {
 #endif
 
-void AppHidKeyboard_Init(uint8_t const keycodes[13]);
+#define APP_HID_KEY_COUNT  13u
+
+void AppHidKeyboard_Init(uint8_t const keycodes[APP_HID_KEY_COUNT]);
+void AppHidKeyboard_SetKeycodes(
+  uint8_t const keycodes[APP_HID_KEY_COUNT]);
 void AppHidKeyboard_RequestReportFromISR(void);
 void AppHidKeyboard_Task(void);
 

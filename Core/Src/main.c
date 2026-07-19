@@ -28,6 +28,7 @@
 #include "app_buttons.h"
 #include "app_config.h"
 #include "app_hid_keyboard.h"
+#include "app_mai2led.h"
 #include "tusb.h"
 /* USER CODE END Includes */
 
@@ -100,6 +101,10 @@ int main(void)
   (void)AppConfig_Init();
   AppButtons_Init();
   AppHidKeyboard_Init(AppConfig_GetKeycodes());
+  if (!AppMai2Led_Init())
+  {
+    Error_Handler();
+  }
 
   tusb_rhport_init_t const usb_init =
   {
@@ -126,6 +131,7 @@ int main(void)
     tud_task();
     AppButtons_Task();
     AppHidKeyboard_Task();
+    AppMai2Led_Task();
   }
   /* USER CODE END 3 */
 }

@@ -68,19 +68,19 @@ static uint8_t const app_config_keycodes_1p[APP_CONFIG_KEY_COUNT] =
 
 static uint8_t const app_config_keycodes_2p[APP_CONFIG_KEY_COUNT] =
 {
-  HID_KEY_8,
-  HID_KEY_9,
-  HID_KEY_6,
-  HID_KEY_3,
-  HID_KEY_2,
-  HID_KEY_1,
-  HID_KEY_4,
-  HID_KEY_7,
+  HID_KEY_KEYPAD_8,
+  HID_KEY_KEYPAD_9,
+  HID_KEY_KEYPAD_6,
+  HID_KEY_KEYPAD_3,
+  HID_KEY_KEYPAD_2,
+  HID_KEY_KEYPAD_1,
+  HID_KEY_KEYPAD_4,
+  HID_KEY_KEYPAD_7,
   HID_KEY_3,
   HID_KEY_KEYPAD_MULTIPLY,
   HID_KEY_8,
   HID_KEY_9,
-  HID_KEY_ENTER
+  HID_KEY_NUM_LOCK
 };
 
 static AppConfigData app_config_cache;

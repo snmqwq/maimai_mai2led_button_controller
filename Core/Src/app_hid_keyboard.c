@@ -5,13 +5,19 @@
 #include "app_buttons.h"
 #include "tusb.h"
 
-#define APP_HID_KEY_COUNT    13u
 #define APP_HID_REPORT_SIZE  (2u + APP_HID_KEY_COUNT)
 
 static uint8_t app_hid_keycodes[APP_HID_KEY_COUNT];
 static volatile uint8_t app_hid_report_requested;
 
 void AppHidKeyboard_Init(uint8_t const keycodes[APP_HID_KEY_COUNT])
+{
+  AppHidKeyboard_SetKeycodes(keycodes);
+  app_hid_report_requested = 0u;
+}
+
+void AppHidKeyboard_SetKeycodes(
+  uint8_t const keycodes[APP_HID_KEY_COUNT])
 {
   if (keycodes == NULL)
   {
@@ -22,7 +28,7 @@ void AppHidKeyboard_Init(uint8_t const keycodes[APP_HID_KEY_COUNT])
     memcpy(app_hid_keycodes, keycodes, sizeof(app_hid_keycodes));
   }
 
-  app_hid_report_requested = 0u;
+  app_hid_report_requested = 1u;
 }
 
 void AppHidKeyboard_RequestReportFromISR(void)
