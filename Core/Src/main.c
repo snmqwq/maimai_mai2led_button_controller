@@ -25,7 +25,10 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "app_buttons.h"
+#include "app_config.h"
+#include "app_hid_keyboard.h"
+#include "tusb.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -92,8 +95,25 @@ int main(void)
   MX_DMA_Init();
   MX_TIM17_Init();
   MX_USB_PCD_Init();
+  MX_TIM7_Init();
   /* USER CODE BEGIN 2 */
+  (void)AppConfig_Init();
+  AppButtons_Init();
+  AppHidKeyboard_Init(AppConfig_GetKeycodes());
 
+  tusb_rhport_init_t const usb_init =
+  {
+    .role = TUSB_ROLE_DEVICE,
+    .speed = TUSB_SPEED_FULL
+  };
+  if (!tusb_init(0, &usb_init))
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_Base_Start_IT(&htim7) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -103,6 +123,9 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    tud_task();
+    AppButtons_Task();
+    AppHidKeyboard_Task();
   }
   /* USER CODE END 3 */
 }
