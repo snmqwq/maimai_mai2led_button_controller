@@ -20,30 +20,64 @@ KEYCFG_SET_RAINBOW_ENABLED = 0xA7
 KEYCFG_GET_RAINBOW_ENABLED = 0xA8
 KEYCFG_SET_KEY_MODE = 0xA9
 KEYCFG_GET_KEY_MODE = 0xAA
+KEYCFG_SET_IO4_MODE = 0xAB
+KEYCFG_GET_IO4_MODE = 0xAC
 
 ACK_HEAD = 0xAC
 
 KEY_MODE_1P = 0
 KEY_MODE_2P = 1
 KEY_MODE_CUSTOM = 2
+KEY_MODE_OFF = 3
 
 KEY_MODE_NAME = {
     KEY_MODE_1P: "1p",
     KEY_MODE_2P: "2p",
     KEY_MODE_CUSTOM: "custom",
+    KEY_MODE_OFF: "off",
+}
+
+KEY_MODE_DISPLAY = {
+    KEY_MODE_1P: "1P",
+    KEY_MODE_2P: "2P",
+    KEY_MODE_CUSTOM: "自定义",
+    KEY_MODE_OFF: "关闭",
 }
 
 KEY_MODE_VALUE = {
     "1p": KEY_MODE_1P,
     "2p": KEY_MODE_2P,
     "custom": KEY_MODE_CUSTOM,
+    "off": KEY_MODE_OFF,
+}
+
+IO4_MODE_OFF = 0
+IO4_MODE_1P = 1
+IO4_MODE_2P = 2
+
+IO4_MODE_NAME = {
+    IO4_MODE_OFF: "off",
+    IO4_MODE_1P: "1p",
+    IO4_MODE_2P: "2p",
+}
+
+IO4_MODE_DISPLAY = {
+    IO4_MODE_OFF: "关闭",
+    IO4_MODE_1P: "1P",
+    IO4_MODE_2P: "2P",
+}
+
+IO4_MODE_VALUE = {
+    "off": IO4_MODE_OFF,
+    "1p": IO4_MODE_1P,
+    "2p": IO4_MODE_2P,
 }
 
 STATUS_TEXT = {
-    0x00: "OK",
-    0x01: "SUM_ERROR",
-    0x02: "INDEX_ERROR",
-    0x03: "CMD_ERROR",
+    0x00: "成功",
+    0x01: "校验和错误",
+    0x02: "索引或参数错误",
+    0x03: "命令错误",
 }
 
 HID_KEY_NAME = {
@@ -217,9 +251,9 @@ def build_packet(cmd, idx=0, key=0):
 
 
 def read_ack(ser, timeout=0.5):
-    deadline = time.time() + timeout
+    deadline = time.monotonic() + timeout
     buf = bytearray()
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         n = ser.in_waiting
         if n:
             buf.extend(ser.read(n))
@@ -234,7 +268,11 @@ def read_ack(ser, timeout=0.5):
 def send_cmd(ser, cmd, idx=0, key=0):
     ser.reset_input_buffer()
     pkt = build_packet(cmd, idx, key)
-    ser.write(pkt)
+    written = ser.write(pkt)
+    if written != len(pkt):
+        raise serial.SerialTimeoutException(
+            f"串口短写：应发送 {len(pkt)} 字节，实际发送 {written} 字节"
+        )
     ser.flush()
     ack = read_ack(ser)
     if ack is None:
@@ -244,7 +282,7 @@ def send_cmd(ser, cmd, idx=0, key=0):
     return {
         "raw": ack,
         "status": status,
-        "status_text": STATUS_TEXT.get(status, f"UNKNOWN_STATUS_0x{status:02X}"),
+        "status_text": STATUS_TEXT.get(status, f"未知状态 0x{status:02X}"),
         "idx": ack_idx,
         "key": ack_key,
     }
@@ -274,7 +312,7 @@ def get_key(ser, idx):
     if ack is None:
         return None
     if ack["status"] != 0:
-        print(f"读取失败: idx={idx}, status={ack['status_text']}")
+        print(f"读取失败：编号={idx}，状态={ack['status_text']}")
         return None
     return ack["key"]
 
@@ -289,12 +327,17 @@ def probe_key_mode(ser):
     return ack is not None and ack["status"] == 0
 
 
+def probe_io4_mode(ser):
+    ack = send_cmd(ser, KEYCFG_GET_IO4_MODE, 0, 0)
+    return ack is not None and ack["status"] == 0
+
+
 def get_leds_per_logic(ser):
     ack = send_cmd(ser, KEYCFG_GET_LEDS_PER_LOGIC, 0, 0)
     if ack is None:
         return None
     if ack["status"] != 0:
-        print(f"Read leds_per_logic failed: {ack['status_text']}")
+        print(f"读取每逻辑灯珠数失败：{ack['status_text']}")
         return None
     return ack["key"]
 
@@ -304,7 +347,7 @@ def get_rainbow_enabled(ser):
     if ack is None:
         return None
     if ack["status"] != 0:
-        print(f"Read rainbow_enabled failed: {ack['status_text']}")
+        print(f"读取待机彩虹设置失败：{ack['status_text']}")
         return None
     return bool(ack["key"])
 
@@ -316,15 +359,15 @@ def read_light_config(ser):
     if leds is None or rainbow is None:
         return
 
-    print("\\nCurrent light config:")
-    print(f"  leds_per_logic = {leds}")
-    print(f"  rainbow_enabled = {1 if rainbow else 0}")
+    print("\n当前灯光配置：")
+    print(f"  每逻辑灯珠数 = {leds}")
+    print(f"  待机彩虹 = {'开启' if rainbow else '关闭'}")
     print()
 
 
 def set_leds_per_logic(ser, value):
     if not (1 <= value <= 4):
-        print("leds_per_logic must be 1~4")
+        print("每逻辑灯珠数必须在 1～4 范围内。")
         return
 
     ack = send_cmd(ser, KEYCFG_SET_LEDS_PER_LOGIC, 0, value)
@@ -333,9 +376,9 @@ def set_leds_per_logic(ser, value):
 
     print(f"ACK: {ack['raw'].hex(' ').upper()}  {ack['status_text']}")
     if ack["status"] == 0:
-        print(f"Updated RAM: leds_per_logic = {ack['key']}. Run save to write Flash.")
+        print(f"已更新 RAM：每逻辑灯珠数 = {ack['key']}。运行 save 后写入 Flash。")
     else:
-        print("Set leds_per_logic failed.")
+        print("设置每逻辑灯珠数失败。")
 
 
 def parse_bool_value(value):
@@ -344,7 +387,7 @@ def parse_bool_value(value):
         return 1
     if value in ("0", "off", "false", "no", "disable", "disabled"):
         return 0
-    raise ValueError("expected on/off/1/0")
+    raise ValueError("参数必须是 on、off、1 或 0")
 
 
 def set_rainbow_enabled(ser, enabled):
@@ -354,15 +397,16 @@ def set_rainbow_enabled(ser, enabled):
 
     print(f"ACK: {ack['raw'].hex(' ').upper()}  {ack['status_text']}")
     if ack["status"] == 0:
-        print(f"Updated RAM: rainbow_enabled = {ack['key']}. Run save to write Flash.")
+        state = "开启" if ack["key"] else "关闭"
+        print(f"已更新 RAM：待机彩虹 = {state}。运行 save 后写入 Flash。")
     else:
-        print("Set rainbow_enabled failed.")
+        print("设置待机彩虹失败。")
 
 
 def parse_key_mode(value):
     value = value.strip().lower()
     if value not in KEY_MODE_VALUE:
-        raise ValueError("mode must be 1p, 2p, or custom")
+        raise ValueError("mode 必须是 1p、2p、custom 或 off")
     return KEY_MODE_VALUE[value]
 
 
@@ -371,10 +415,10 @@ def get_key_mode(ser):
     if ack is None:
         return None
     if ack["status"] != 0:
-        print(f"Read key mode failed: {ack['status_text']}")
+        print(f"读取键盘模式失败：{ack['status_text']}")
         return None
     if ack["key"] not in KEY_MODE_NAME:
-        print(f"Read key mode failed: unknown mode {ack['key']}")
+        print(f"读取键盘模式失败：未知模式 {ack['key']}")
         return None
     return ack["key"]
 
@@ -382,7 +426,7 @@ def get_key_mode(ser):
 def read_key_mode(ser):
     mode = get_key_mode(ser)
     if mode is not None:
-        print(f"\nCurrent keyboard mode: {KEY_MODE_NAME[mode]}\n")
+        print(f"\n当前键盘模式：{KEY_MODE_DISPLAY[mode]}\n")
 
 
 def set_key_mode(ser, mode):
@@ -392,24 +436,66 @@ def set_key_mode(ser, mode):
 
     print(f"ACK: {ack['raw'].hex(' ').upper()}  {ack['status_text']}")
     if ack["status"] != 0:
-        print("Set key mode failed.")
+        print("设置键盘模式失败。")
         return False
 
-    mode_name = KEY_MODE_NAME.get(ack["key"], f"unknown({ack['key']})")
-    print(f"Updated RAM: keyboard mode = {mode_name}. Run save to write Flash.")
+    mode_name = KEY_MODE_DISPLAY.get(ack["key"], f"未知({ack['key']})")
+    print(f"已更新 RAM：键盘模式 = {mode_name}。运行 save 后写入 Flash。")
+    return True
+
+
+def parse_io4_mode(value):
+    value = value.strip().lower()
+    if value not in IO4_MODE_VALUE:
+        raise ValueError("iomode 必须是 off、1p 或 2p")
+    return IO4_MODE_VALUE[value]
+
+
+def get_io4_mode(ser):
+    ack = send_cmd(ser, KEYCFG_GET_IO4_MODE, 0, 0)
+    if ack is None:
+        return None
+    if ack["status"] != 0:
+        print(f"读取 IO4 模式失败：{ack['status_text']}")
+        return None
+    if ack["key"] not in IO4_MODE_NAME:
+        print(f"读取 IO4 模式失败：未知模式 {ack['key']}")
+        return None
+    return ack["key"]
+
+
+def read_io4_mode(ser):
+    mode = get_io4_mode(ser)
+    if mode is not None:
+        print(f"\n当前 IO4 模式：{IO4_MODE_DISPLAY[mode]}\n")
+
+
+def set_io4_mode(ser, mode):
+    ack = send_cmd(ser, KEYCFG_SET_IO4_MODE, 0, mode)
+    if ack is None:
+        return False
+
+    print(f"ACK: {ack['raw'].hex(' ').upper()}  {ack['status_text']}")
+    if ack["status"] != 0:
+        print("设置 IO4 模式失败。")
+        return False
+
+    mode_name = IO4_MODE_DISPLAY.get(ack["key"], f"未知({ack['key']})")
+    print(f"已更新 RAM：IO4 模式 = {mode_name}。运行 save 后写入 Flash。")
     return True
 
 
 def read_all_keys(ser):
-    print("\n当前键位:")
-    print("IDX  HID   KEY")
-    print("----------------")
+    print("\n当前键位：")
+    print("编号  分组  HID值  键名")
+    print("------------------------")
     for idx in range(BTN_NUM):
         key = get_key(ser, idx)
+        group = "主键" if idx < 8 else "副键"
         if key is None:
-            print(f"{idx:02d}   --    读取失败")
+            print(f"{idx:02d}    {group}  --     读取失败")
         else:
-            print(f"{idx:02d}   0x{key:02X}  {hid_name(key)}")
+            print(f"{idx:02d}    {group}  0x{key:02X}   {hid_name(key)}")
     print()
 
 
@@ -419,7 +505,7 @@ def set_key(ser, idx, key):
         return
     print(f"ACK: {ack['raw'].hex(' ').upper()}  {ack['status_text']}")
     if ack["status"] == 0:
-        print(f"已修改: key[{idx}] = 0x{key:02X} ({hid_name(key)})")
+        print(f"已修改：按键[{idx}] = 0x{key:02X} ({hid_name(key)})")
     else:
         print("修改失败。")
 
@@ -441,12 +527,12 @@ def load_default(ser):
         return
     print(f"ACK: {ack['raw'].hex(' ').upper()}  {ack['status_text']}")
     if ack["status"] == 0:
-        print("已恢复默认键位并保存。")
+        print("已恢复默认配置并保存到 Flash。")
     else:
         print("恢复默认失败。")
 
 def export_ini(ser, filename, supports_light_config=False,
-               supports_key_mode=False):
+               supports_key_mode=False, supports_io4_mode=False):
     cfg = configparser.ConfigParser()
     cfg["keymap"] = {}
 
@@ -454,7 +540,7 @@ def export_ini(ser, filename, supports_light_config=False,
         key = get_key(ser, idx)
 
         if key is None:
-            print(f"Read key[{idx}] failed, export aborted.")
+            print(f"读取按键[{idx}]失败，已取消导出。")
             return
 
         cfg["keymap"][str(idx)] = hid_name(key)
@@ -464,7 +550,7 @@ def export_ini(ser, filename, supports_light_config=False,
         rainbow = get_rainbow_enabled(ser)
 
         if leds is None or rainbow is None:
-            print("Read light config failed, export aborted.")
+            print("读取灯光配置失败，已取消导出。")
             return
 
         cfg["led"] = {
@@ -475,51 +561,62 @@ def export_ini(ser, filename, supports_light_config=False,
     if supports_key_mode:
         mode = get_key_mode(ser)
         if mode is None:
-            print("Read keyboard mode failed, export aborted.")
+            print("读取键盘模式失败，已取消导出。")
             return
 
         cfg["keyboard"] = {
             "mode": KEY_MODE_NAME[mode],
         }
 
+    if supports_io4_mode:
+        mode = get_io4_mode(ser)
+        if mode is None:
+            print("读取 IO4 模式失败，已取消导出。")
+            return
+
+        cfg["io4"] = {
+            "mode": IO4_MODE_NAME[mode],
+        }
+
     with open(filename, "w", encoding="utf-8") as f:
         cfg.write(f)
 
-    print(f"Exported device config to {filename}")
+    print(f"设备配置已导出到：{filename}")
+
 
 def import_ini(ser, filename, supports_light_config=False,
-               supports_key_mode=False):
+               supports_key_mode=False, supports_io4_mode=False):
     cfg = configparser.ConfigParser()
     cfg.read(filename, encoding="utf-8")
 
     if "keymap" not in cfg:
-        print("ini file is missing [keymap].")
+        print("INI 文件缺少 [keymap] 配置段。")
         return
 
     for idx in range(BTN_NUM):
         key_text = cfg["keymap"].get(str(idx))
 
         if key_text is None:
-            print(f"ini is missing keymap.{idx}, skipped.")
+            print(f"INI 缺少 keymap.{idx}，已跳过。")
             continue
 
         try:
             key = parse_key(key_text)
         except ValueError as e:
-            print(f"key[{idx}] invalid: {key_text}, {e}")
+            print(f"按键[{idx}]无效：{key_text}，{e}")
             continue
 
         ack = send_cmd(ser, KEYCFG_SET_KEY, idx, key)
 
         if ack is None or ack["status"] != 0:
-            print(f"Write key[{idx}] failed.")
+            print(f"写入按键[{idx}]失败。")
             return
 
-        print(f"key[{idx}] = 0x{key:02X} ({hid_name(key)})")
+        print(f"按键[{idx}] = 0x{key:02X} ({hid_name(key)})")
 
     if "led" in cfg:
         if not supports_light_config:
-            print("Old device detected; skipped [led] config.")
+            print("检测到旧固件，已跳过 [led] 配置。")
         else:
             led_section = cfg["led"]
 
@@ -531,44 +628,64 @@ def import_ini(ser, filename, supports_light_config=False,
 
     if "keyboard" in cfg and "mode" in cfg["keyboard"]:
         if not supports_key_mode:
-            print("Old device detected; skipped [keyboard] mode.")
+            print("检测到旧固件，已跳过 [keyboard] 模式。")
         else:
             mode = parse_key_mode(cfg["keyboard"]["mode"])
             if not set_key_mode(ser, mode):
-                print("Write keyboard mode failed.")
+                print("写入键盘模式失败。")
                 return
 
-    print("ini has been written to device RAM, not Flash.")
-    print("Run save if you need the config to persist after power off.")
+    if "io4" in cfg and "mode" in cfg["io4"]:
+        if not supports_io4_mode:
+            print("检测到旧固件，已跳过 [io4] 模式。")
+        else:
+            mode = parse_io4_mode(cfg["io4"]["mode"])
+            if not set_io4_mode(ser, mode):
+                print("写入 IO4 模式失败。")
+                return
+
+    print("INI 配置已写入设备 RAM，尚未写入 Flash。")
+    print("如需断电保存，请运行 save。")
 
 
-def print_help(supports_light_config=False, supports_key_mode=False):
+def print_help(supports_light_config=False, supports_key_mode=False,
+               supports_io4_mode=False):
     print("""
 可用命令：
-  list              读取并显示全部按键映射
-  get <编号>         读取一个按键，例如：get 0
-  set <编号> <键值>  修改 RAM 中的按键，例如：set 0 B / set 0 0x05
-  save              将当前 RAM 配置保存到 Flash
-  default           恢复默认配置并保存到 Flash
-  keys              显示已知的 HID 键名
-  help              显示本帮助
-  exit              退出工具
-  export <文件.ini> 将设备配置导出到 INI 文件
-  import <文件.ini> 将 INI 配置写入设备 RAM，不自动保存到 Flash
+  list                    读取并显示全部按键映射
+  get <编号>              读取一个按键，例如：get 0
+  set <编号> <键值>       修改 RAM 中的按键，例如：set 0 B / set 0 0x05
+  save                    将当前 RAM 配置保存到 Flash
+  default                 恢复默认配置并保存到 Flash
+  keys                    显示已知的 HID 键名
+  export <文件.ini>       将设备配置导出到 INI 文件
+  import <文件.ini>       将 INI 配置写入设备 RAM，不自动保存到 Flash
+  help                    显示本帮助
+  exit                    退出工具
 """)
 
     if supports_light_config:
         print("""灯光配置：
-  light             读取灯光配置
-  leds <1-4>        设置每个逻辑按键对应的灯珠数，仅写入 RAM
-  rainbow <on|off>  开启或关闭待机彩虹，仅写入 RAM
+  light                   读取当前灯光配置
+  leds <1-4>              设置每个逻辑灯对应的物理灯珠数，仅写入 RAM
+  rainbow <on|off>        开启或关闭待机彩虹，仅写入 RAM
 """)
 
     if supports_key_mode:
         print("""键盘模式：
-  mode              读取当前键盘模式
-  mode <1p|2p|custom>
-                    设置键盘模式，仅写入 RAM
+  mode                    读取当前键盘模式
+  mode <1p|2p|custom|off> 设置键盘模式，仅写入 RAM
+
+  1P/2P 模式固定主按键 0～7，副按键 8～12 可单独修改。
+  在 1P/2P 模式修改主按键时，固件会自动切换到自定义模式。
+""")
+
+    if supports_io4_mode:
+        print("""IO4 模式：
+  iomode                  读取当前 IO4 模式
+  iomode <off|1p|2p>      设置 IO4 模式，仅写入 RAM
+
+  IO4 与键盘模式相互独立；IO4 开启时按键 12 作为投币（Coin）。
 """)
 
 
@@ -577,20 +694,25 @@ def print_keys():
         print(f"0x{code:02X}  {name}")
 
 
-def repl(ser, supports_light_config, supports_key_mode):
+def repl(ser, supports_light_config, supports_key_mode, supports_io4_mode):
     read_all_keys(ser)
 
     if supports_light_config:
         read_light_config(ser)
     else:
-        print("\nOld device detected; light config commands are hidden/disabled.\n")
+        print("\n检测到旧固件；已隐藏/禁用灯光配置命令。\n")
 
     if supports_key_mode:
         read_key_mode(ser)
     else:
-        print("Old device detected; keyboard mode commands are hidden/disabled.\n")
+        print("检测到旧固件；已隐藏/禁用键盘模式命令。\n")
 
-    print_help(supports_light_config, supports_key_mode)
+    if supports_io4_mode:
+        read_io4_mode(ser)
+    else:
+        print("检测到旧固件；已隐藏/禁用 IO4 模式命令。\n")
+
+    print_help(supports_light_config, supports_key_mode, supports_io4_mode)
     while True:
         try:
             line = input("keycfg> ").strip()
@@ -605,29 +727,30 @@ def repl(ser, supports_light_config, supports_key_mode):
             if cmd in ("exit", "quit", "q"):
                 break
             elif cmd in ("help", "?"):
-                print_help(supports_light_config, supports_key_mode)
+                print_help(supports_light_config, supports_key_mode,
+                           supports_io4_mode)
             elif cmd == "keys":
                 print_keys()
             elif cmd == "list":
                 read_all_keys(ser)
             elif cmd == "get":
                 if len(parts) != 2:
-                    print("Usage: get <idx>")
+                    print("用法：get <编号>")
                     continue
                 idx = int(parts[1], 0)
                 if not (0 <= idx < BTN_NUM):
-                    print(f"idx range must be 0~{BTN_NUM - 1}")
+                    print(f"按键编号必须在 0～{BTN_NUM - 1} 范围内。")
                     continue
                 key = get_key(ser, idx)
                 if key is not None:
-                    print(f"key[{idx}] = 0x{key:02X} ({hid_name(key)})")
+                    print(f"按键[{idx}] = 0x{key:02X} ({hid_name(key)})")
             elif cmd == "set":
                 if len(parts) != 3:
-                    print("Usage: set <idx> <key>")
+                    print("用法：set <编号> <键值>")
                     continue
                 idx = int(parts[1], 0)
                 if not (0 <= idx < BTN_NUM):
-                    print(f"idx range must be 0~{BTN_NUM - 1}")
+                    print(f"按键编号必须在 0～{BTN_NUM - 1} 范围内。")
                     continue
                 key = parse_key(parts[2])
                 set_key(ser, idx, key)
@@ -637,66 +760,83 @@ def repl(ser, supports_light_config, supports_key_mode):
                 load_default(ser)
             elif cmd == "export":
                 if len(parts) != 2:
-                    print("Usage: export <file.ini>")
+                    print("用法：export <文件.ini>")
                     continue
                 export_ini(ser, parts[1], supports_light_config,
-                           supports_key_mode)
+                           supports_key_mode, supports_io4_mode)
             elif cmd == "import":
                 if len(parts) != 2:
-                    print("Usage: import <file.ini>")
+                    print("用法：import <文件.ini>")
                     continue
                 import_ini(ser, parts[1], supports_light_config,
-                           supports_key_mode)
+                           supports_key_mode, supports_io4_mode)
             elif cmd == "light":
                 if not supports_light_config:
-                    print("Old device detected; light config is not supported.")
+                    print("检测到旧固件；不支持灯光配置。")
                     continue
                 read_light_config(ser)
             elif cmd == "leds":
                 if not supports_light_config:
-                    print("Old device detected; light config is not supported.")
+                    print("检测到旧固件；不支持灯光配置。")
                     continue
                 if len(parts) != 2:
-                    print("Usage: leds <1-4>")
+                    print("用法：leds <1-4>")
                     continue
                 set_leds_per_logic(ser, int(parts[1], 0))
             elif cmd == "rainbow":
                 if not supports_light_config:
-                    print("Old device detected; light config is not supported.")
+                    print("检测到旧固件；不支持灯光配置。")
                     continue
                 if len(parts) != 2:
-                    print("Usage: rainbow <on|off|1|0>")
+                    print("用法：rainbow <on|off|1|0>")
                     continue
                 set_rainbow_enabled(ser, parse_bool_value(parts[1]))
             elif cmd == "mode":
                 if not supports_key_mode:
-                    print("Old device detected; keyboard mode is not supported.")
+                    print("检测到旧固件；不支持键盘模式配置。")
                     continue
                 if len(parts) == 1:
                     read_key_mode(ser)
                     continue
                 if len(parts) != 2:
-                    print("Usage: mode <1p|2p|custom>")
+                    print("用法：mode <1p|2p|custom|off>")
                     continue
                 set_key_mode(ser, parse_key_mode(parts[1]))
+            elif cmd == "iomode":
+                if not supports_io4_mode:
+                    print("检测到旧固件；不支持 IO4 模式配置。")
+                    continue
+                if len(parts) == 1:
+                    read_io4_mode(ser)
+                    continue
+                if len(parts) != 2:
+                    print("用法：iomode <off|1p|2p>")
+                    continue
+                set_io4_mode(ser, parse_io4_mode(parts[1]))
             else:
-                print("Unknown command, type help.")
+                print("未知命令，请输入 help 查看帮助。")
         except ValueError as e:
-            print(f"Input error: {e}")
+            print(f"输入错误：{e}")
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1].lower() in ("-h", "--help"):
+        print_help(True, True, True)
+        return
+
     port = choose_port()
     try:
         ser = serial.Serial(port=port, baudrate=115200, timeout=0.05, write_timeout=0.5)
     except serial.SerialException as e:
-        print(f"打开串口失败: {e}")
+        print(f"打开串口失败：{e}")
         sys.exit(1)
     print(f"已打开 {port}")
     supports_light_config = probe_light_config(ser)
     supports_key_mode = probe_key_mode(ser)
+    supports_io4_mode = probe_io4_mode(ser)
     try:
-        repl(ser, supports_light_config, supports_key_mode)
+        repl(ser, supports_light_config, supports_key_mode,
+             supports_io4_mode)
     finally:
         ser.close()
         print("串口已关闭。")

@@ -7,9 +7,14 @@
 #include "main.h"
 
 #define APP_CONFIG_MAGIC              0x4D324346u
-#define APP_CONFIG_FORMAT_VERSION     1u
+#define APP_CONFIG_FORMAT_VERSION     2u
+#define APP_CONFIG_FORMAT_VERSION_V1  1u
 #define APP_CONFIG_COMMIT_MARKER      0xA55Au
 #define APP_CONFIG_FLASH_PAGE_BYTES   FLASH_PAGE_SIZE
+#define APP_CONFIG_MAIN_KEY_COUNT     8u
+#define APP_CONFIG_KEY_MODE_MASK      0x0Fu
+#define APP_CONFIG_IO4_MODE_MASK      0xF0u
+#define APP_CONFIG_IO4_MODE_SHIFT     4u
 
 typedef struct
 {
@@ -80,11 +85,12 @@ static uint8_t const app_config_keycodes_2p[APP_CONFIG_KEY_COUNT] =
   HID_KEY_KEYPAD_MULTIPLY,
   HID_KEY_8,
   HID_KEY_9,
-  HID_KEY_NUM_LOCK
+  HID_KEY_ENTER
 };
 
 static AppConfigData app_config_cache;
 static AppConfigData app_config_saved;
+static uint8_t app_config_effective_keycodes[APP_CONFIG_KEY_COUNT];
 static uint32_t app_config_next_sequence;
 static uint16_t app_config_next_slot;
 static bool app_config_has_saved;
@@ -111,6 +117,48 @@ static uint32_t AppConfig_CalculateCrc32(void const *data, size_t length)
   return ~crc;
 }
 
+static AppConfigKeyMode AppConfig_DataGetKeyboardMode(
+  AppConfigData const *config)
+{
+  return (AppConfigKeyMode)(config->hid_modes &
+                            APP_CONFIG_KEY_MODE_MASK);
+}
+
+static AppConfigIo4Mode AppConfig_DataGetIo4Mode(
+  AppConfigData const *config)
+{
+  return (AppConfigIo4Mode)((config->hid_modes &
+                             APP_CONFIG_IO4_MODE_MASK) >>
+                            APP_CONFIG_IO4_MODE_SHIFT);
+}
+
+void AppConfig_SetKeyboardMode(AppConfigData *config,
+                               AppConfigKeyMode mode)
+{
+  if (config == NULL)
+  {
+    return;
+  }
+
+  config->hid_modes =
+    (uint8_t)((config->hid_modes & APP_CONFIG_IO4_MODE_MASK) |
+              ((uint8_t)mode & APP_CONFIG_KEY_MODE_MASK));
+}
+
+void AppConfig_SetIo4Mode(AppConfigData *config,
+                          AppConfigIo4Mode mode)
+{
+  if (config == NULL)
+  {
+    return;
+  }
+
+  config->hid_modes =
+    (uint8_t)((config->hid_modes & APP_CONFIG_KEY_MODE_MASK) |
+              (((uint8_t)mode << APP_CONFIG_IO4_MODE_SHIFT) &
+               APP_CONFIG_IO4_MODE_MASK));
+}
+
 bool AppConfig_Validate(AppConfigData const *config)
 {
   if (config == NULL)
@@ -128,7 +176,13 @@ bool AppConfig_Validate(AppConfigData const *config)
     return false;
   }
 
-  if (config->key_mode > (uint8_t)APP_CONFIG_KEY_MODE_CUSTOM)
+  if (AppConfig_DataGetKeyboardMode(config) >
+      APP_CONFIG_KEY_MODE_DISABLED)
+  {
+    return false;
+  }
+
+  if (AppConfig_DataGetIo4Mode(config) > APP_CONFIG_IO4_MODE_2P)
   {
     return false;
   }
@@ -140,7 +194,8 @@ static bool AppConfig_RecordIsValid(AppConfigFlashRecord const *record)
 {
   if ((record->commit_marker != APP_CONFIG_COMMIT_MARKER) ||
       (record->magic != APP_CONFIG_MAGIC) ||
-      (record->format_version != APP_CONFIG_FORMAT_VERSION) ||
+      ((record->format_version != APP_CONFIG_FORMAT_VERSION) &&
+       (record->format_version != APP_CONFIG_FORMAT_VERSION_V1)) ||
       (record->data_size != sizeof(AppConfigData)) ||
       (record->sequence == 0u))
   {
@@ -202,8 +257,10 @@ static AppConfigScanResult AppConfig_ScanFlash(void)
 static void AppConfig_SetDefaults(AppConfigData *config)
 {
   config->leds_per_logic = 2u;
-  config->rainbow_enabled = 0u;
-  config->key_mode = (uint8_t)APP_CONFIG_KEY_MODE_1P;
+  config->rainbow_enabled = 1u;
+  config->hid_modes = 0u;
+  AppConfig_SetKeyboardMode(config, APP_CONFIG_KEY_MODE_1P);
+  AppConfig_SetIo4Mode(config, APP_CONFIG_IO4_MODE_DISABLED);
   memcpy(config->custom_keycodes, app_config_keycodes_1p,
          sizeof(config->custom_keycodes));
 }
@@ -245,18 +302,41 @@ AppConfigData const *AppConfig_Get(void)
 
 uint8_t const *AppConfig_GetKeycodes(void)
 {
-  switch ((AppConfigKeyMode)app_config_cache.key_mode)
+  memcpy(app_config_effective_keycodes,
+         app_config_cache.custom_keycodes,
+         sizeof(app_config_effective_keycodes));
+
+  switch (AppConfig_GetKeyboardMode())
   {
     case APP_CONFIG_KEY_MODE_2P:
-      return app_config_keycodes_2p;
-
-    case APP_CONFIG_KEY_MODE_CUSTOM:
-      return app_config_cache.custom_keycodes;
+      memcpy(app_config_effective_keycodes,
+             app_config_keycodes_2p,
+             APP_CONFIG_MAIN_KEY_COUNT);
+      break;
 
     case APP_CONFIG_KEY_MODE_1P:
+      memcpy(app_config_effective_keycodes,
+             app_config_keycodes_1p,
+             APP_CONFIG_MAIN_KEY_COUNT);
+      break;
+
+    case APP_CONFIG_KEY_MODE_CUSTOM:
+    case APP_CONFIG_KEY_MODE_DISABLED:
     default:
-      return app_config_keycodes_1p;
+      break;
   }
+
+  return app_config_effective_keycodes;
+}
+
+AppConfigKeyMode AppConfig_GetKeyboardMode(void)
+{
+  return AppConfig_DataGetKeyboardMode(&app_config_cache);
+}
+
+AppConfigIo4Mode AppConfig_GetIo4Mode(void)
+{
+  return AppConfig_DataGetIo4Mode(&app_config_cache);
 }
 
 bool AppConfig_WriteCache(AppConfigData const *config)

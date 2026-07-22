@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "app_buttons.h"
 #include "app_config.h"
 #include "app_hid_keyboard.h"
 #include "tim.h"
@@ -61,6 +62,8 @@ enum
   KEYCFG_GET_RAINBOW_ENABLED = 0xA8u,
   KEYCFG_SET_KEY_MODE = 0xA9u,
   KEYCFG_GET_KEY_MODE = 0xAAu,
+  KEYCFG_SET_IO4_MODE = 0xABu,
+  KEYCFG_GET_IO4_MODE = 0xACu,
 
   KEYCFG_OK = 0x00u,
   KEYCFG_SUM_ERROR = 0x01u,
@@ -188,6 +191,8 @@ static uint8_t rainbow_update_divider;
 static uint32_t idle_task_last_tick;
 static volatile LedReconfigureState led_reconfigure_state;
 static uint16_t led_reconfigure_target_total;
+static volatile bool led_dma_busy;
+static volatile bool led_flush_pending;
 
 static uint32_t StartFadeTime;
 static uint32_t EndFadeTime;
@@ -203,6 +208,42 @@ static uint8_t const special_seq[SPECIAL_SEQ_LEN] =
 {
   0x91u, 0x3Eu, 0xEDu, 0x20u, 0x7Cu, 0x99u, 0x58u, 0xACu
 };
+
+static bool led_try_update(void)
+{
+  if (led_dma_busy)
+  {
+    led_flush_pending = true;
+    return false;
+  }
+
+  /*
+   * WS28XX_Update() rewrites hws.Buffer before starting DMA and releases its
+   * internal lock immediately. Keep an application-level ownership flag from
+   * before that rewrite until the DMA completion/error callback stops DMA.
+   */
+  led_dma_busy = true;
+  led_flush_pending = false;
+
+  if (!WS28XX_Update(&hws))
+  {
+    led_dma_busy = false;
+    led_flush_pending = true;
+    return false;
+  }
+
+  return true;
+}
+
+static void led_flush_pending_task(void)
+{
+  if (led_flush_pending &&
+      (!led_dma_busy) &&
+      (led_reconfigure_state == LED_RECONFIG_IDLE))
+  {
+    (void)led_try_update();
+  }
+}
 
 static void mai2led_cancel_fade(void)
 {
@@ -331,7 +372,7 @@ static bool flush_button_rainbow(void)
 {
   draw_button_rainbow(rainbow_hue);
 
-  if (WS28XX_Update(&hws))
+  if (led_try_update())
   {
     rainbow_hue += RAINBOW_HUE_STEP;
     return true;
@@ -441,7 +482,7 @@ static void update_lights(void)
     else
     {
       set_button_lights_white();
-      if (!WS28XX_Update(&hws))
+      if (!led_try_update())
       {
         idle_lights_refresh_requested = true;
       }
@@ -479,7 +520,7 @@ static void led_reconfigure_task(void)
     case LED_RECONFIG_CLEAR_PENDING:
       clear_all_button_lights();
 
-      if (WS28XX_Update(&hws))
+      if (led_try_update())
       {
         led_reconfigure_state = LED_RECONFIG_CLEAR_IN_FLIGHT;
       }
@@ -494,7 +535,7 @@ static void led_reconfigure_task(void)
       if (AppConfig_Get()->rainbow_enabled == 0u)
       {
         set_button_lights_white();
-        if (!WS28XX_Update(&hws))
+        if (!led_try_update())
         {
           break;
         }
@@ -553,7 +594,7 @@ static void update_io_idle_clear(uint8_t command)
     return;
   }
 
-  if (WS28XX_Update(&hws))
+  if (led_try_update())
   {
     io_idle_clear_pending = false;
   }
@@ -635,8 +676,16 @@ static uint8_t key_config_process(uint8_t *out_idx,
       }
 
       config = *AppConfig_Get();
+      if ((idx < APP_BUTTON_MAIN_COUNT) &&
+          ((AppConfig_GetKeyboardMode() == APP_CONFIG_KEY_MODE_1P) ||
+           (AppConfig_GetKeyboardMode() == APP_CONFIG_KEY_MODE_2P)))
+      {
+        memcpy(config.custom_keycodes, AppConfig_GetKeycodes(),
+               sizeof(config.custom_keycodes));
+        AppConfig_SetKeyboardMode(&config,
+                                  APP_CONFIG_KEY_MODE_CUSTOM);
+      }
       config.custom_keycodes[idx] = key;
-      config.key_mode = (uint8_t)APP_CONFIG_KEY_MODE_CUSTOM;
       if (!AppConfig_WriteCache(&config))
       {
         return KEYCFG_CMD_ERROR;
@@ -713,19 +762,19 @@ static uint8_t key_config_process(uint8_t *out_idx,
 
     case KEYCFG_SET_KEY_MODE:
       if ((idx != 0u) ||
-          (key > (uint8_t)APP_CONFIG_KEY_MODE_CUSTOM))
+          (key > (uint8_t)APP_CONFIG_KEY_MODE_DISABLED))
       {
         return KEYCFG_INDEX_ERROR;
       }
 
       config = *AppConfig_Get();
-      config.key_mode = key;
+      AppConfig_SetKeyboardMode(&config, (AppConfigKeyMode)key);
       if (!AppConfig_WriteCache(&config))
       {
         return KEYCFG_CMD_ERROR;
       }
       AppHidKeyboard_SetKeycodes(AppConfig_GetKeycodes());
-      *out_key = AppConfig_Get()->key_mode;
+      *out_key = (uint8_t)AppConfig_GetKeyboardMode();
       return KEYCFG_OK;
 
     case KEYCFG_GET_KEY_MODE:
@@ -733,7 +782,31 @@ static uint8_t key_config_process(uint8_t *out_idx,
       {
         return KEYCFG_INDEX_ERROR;
       }
-      *out_key = AppConfig_Get()->key_mode;
+      *out_key = (uint8_t)AppConfig_GetKeyboardMode();
+      return KEYCFG_OK;
+
+    case KEYCFG_SET_IO4_MODE:
+      if ((idx != 0u) ||
+          (key > (uint8_t)APP_CONFIG_IO4_MODE_2P))
+      {
+        return KEYCFG_INDEX_ERROR;
+      }
+
+      config = *AppConfig_Get();
+      AppConfig_SetIo4Mode(&config, (AppConfigIo4Mode)key);
+      if (!AppConfig_WriteCache(&config))
+      {
+        return KEYCFG_CMD_ERROR;
+      }
+      *out_key = (uint8_t)AppConfig_GetIo4Mode();
+      return KEYCFG_OK;
+
+    case KEYCFG_GET_IO4_MODE:
+      if (idx != 0u)
+      {
+        return KEYCFG_INDEX_ERROR;
+      }
+      *out_key = (uint8_t)AppConfig_GetIo4Mode();
       return KEYCFG_OK;
 
     default:
@@ -900,7 +973,7 @@ static void mai2led_setLedGs8Bit(void)
                               req.color[0],
                               req.color[1],
                               req.color[2]);
-  (void)WS28XX_Update(&hws);
+  (void)led_try_update();
   ack_init_ok(0u);
 }
 
@@ -963,7 +1036,7 @@ static void mai2led_SetLedGsUpdate(void)
 {
   if (!NeedFade)
   {
-    (void)WS28XX_Update(&hws);
+    (void)led_try_update();
   }
   else
   {
@@ -1058,7 +1131,7 @@ static void mai2led_update_fade(void)
   (void)WS28XX_SetPixels_RGB(&hws,
                               StartFadeLed, EndFadeLed,
                               color.r, color.g, color.b);
-  (void)WS28XX_Update(&hws);
+  (void)led_try_update();
 }
 
 bool AppMai2Led_Init(void)
@@ -1072,12 +1145,15 @@ bool AppMai2Led_Init(void)
   app_initialized = false;
   led_reconfigure_state = LED_RECONFIG_IDLE;
   led_reconfigure_target_total = 0u;
+  led_dma_busy = true;
+  led_flush_pending = false;
   packet_reset(true);
   led_config_apply();
 
   if (!WS28XX_Init(&hws, &htim17, 48u,
                    TIM_CHANNEL_1, WS28XX_PIXEL_MAX))
   {
+    led_dma_busy = false;
     return false;
   }
 
@@ -1218,6 +1294,8 @@ void AppMai2Led_Task(void)
   {
     update_lights();
   }
+
+  led_flush_pending_task();
 }
 
 void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim)
@@ -1229,6 +1307,7 @@ void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim)
 
   (void)HAL_TIM_PWM_Stop_DMA(htim, hws.Channel);
   hws.Lock = 0u;
+  led_dma_busy = false;
 
   if (led_reconfigure_state == LED_RECONFIG_CLEAR_IN_FLIGHT)
   {
@@ -1245,6 +1324,8 @@ void HAL_TIM_ErrorCallback(TIM_HandleTypeDef *htim)
 
   (void)HAL_TIM_PWM_Stop_DMA(htim, hws.Channel);
   hws.Lock = 0u;
+  led_dma_busy = false;
+  led_flush_pending = true;
 
   if (led_reconfigure_state == LED_RECONFIG_CLEAR_IN_FLIGHT)
   {

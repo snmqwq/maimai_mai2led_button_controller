@@ -22,6 +22,7 @@
 #include "stm32f0xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "app_hid_io4.h"
 #include "app_hid_keyboard.h"
 #include "tusb.h"
 /* USER CODE END Includes */
@@ -168,6 +169,7 @@ void TIM7_IRQHandler(void)
   /* USER CODE END TIM7_IRQn 0 */
   HAL_TIM_IRQHandler(&htim7);
   /* USER CODE BEGIN TIM7_IRQn 1 */
+  AppHidIo4_RequestReportFromISR();
   AppHidKeyboard_RequestReportFromISR();
   /* USER CODE END TIM7_IRQn 1 */
 }

@@ -27,6 +27,7 @@
 /* USER CODE BEGIN Includes */
 #include "app_buttons.h"
 #include "app_config.h"
+#include "app_hid_io4.h"
 #include "app_hid_keyboard.h"
 #include "app_mai2led.h"
 #include "tusb.h"
@@ -97,9 +98,11 @@ int main(void)
   MX_TIM17_Init();
   MX_USB_PCD_Init();
   MX_TIM7_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
   (void)AppConfig_Init();
   AppButtons_Init();
+  AppHidIo4_Init();
   AppHidKeyboard_Init(AppConfig_GetKeycodes());
   if (!AppMai2Led_Init())
   {
@@ -130,6 +133,7 @@ int main(void)
     /* USER CODE BEGIN 3 */
     tud_task();
     AppButtons_Task();
+    AppHidIo4_Task();
     AppHidKeyboard_Task();
     AppMai2Led_Task();
   }
